@@ -42,13 +42,13 @@ To run the project, you will need a path to a TOBJ file (see Data folder or HOBA
 ./deformation_app <path_to_input_tobj> <generic_output_path>
 ```
 
-This will launch a Polyscope window with your input tet mesh. There are several GUI buttons which allow you to control simulation parameters, such as the Elastic Energy being used (SNH or ARAP), as well as the simulation timespan (in frames and frames per second) and material parameters (Young's Modulus and Poisson's Ratio). You may also use this to toggle Rayleigh Damping and an External Force direction.
+This will launch a Polyscope window with your input tet mesh. There are several GUI buttons which allow you to control simulation parameters, such as the integration scheme (BDF-1 or BDF-2), the Elastic Energy being used (SNH or ARAP), as well as the simulation timespan (in frames and frames per second) and material parameters (Young's Modulus and Poisson's Ratio). You may also use this to toggle Rayleigh Damping and an External Force direction.
 
 Another button is called *Apply Constraint*. Click the button to activate Constraint Mode, then select the vertices you wish to constrain. After that, click the button again to exit Constraint Mode, or press *Reset Constraints* to clear all of the currently selected constraints. Currently, applying a constraint will fully constrain the position of the selected vertex in all directions.
 
 When you are ready to simulate, press *Compute Deformation*. This will compute the deformation sequence for the specified parameters. The simulator will dump the output deformation sequence to the specified output path.
 
-At this point, you may press *Playback* to visualize the animation. If desired, you can pause the playback to change the frame rate using the *Steps Per Second* slider.
+At this point, you may press *Playback* to visualize the animation. If desired, you can pause the playback to change the frame rate using the *Steps Per Second* slider. You may instead choose to toggle the slider by pressing *Scrubbing*, which allows you to load per frame data as desired.
 
 # Deformation Playback
 
@@ -63,7 +63,7 @@ For example, if I wanted to visualize 75 frames of a saved simulation sequence b
 ./deformation_app ../data/bunny_6.tobj ../output/bunny_6.txt --p 0 75
 ```
 
-This will again open the Polyscope window, but you will be locked to Playback Mode, which only allows you to play back the specified sequence.
+This will again open the Polyscope window, but you will be locked to Playback Mode, which only allows you to play back or scrub the specified sequence.
 
 # Future TODOs
 - Anisotropic energies

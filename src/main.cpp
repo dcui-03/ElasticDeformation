@@ -12,6 +12,7 @@
 #include <array>
 #include <vector>
 #include <stdexcept>
+#include <glm/glm.hpp>
 #include <glm/vec3.hpp>
 
 //#include "args/args.hxx"
@@ -23,6 +24,7 @@
 #include "energy/energy.hpp"
 
 #include "integrator/BDF1.hpp"
+#include "integrator/BDF2.hpp"
 #include "integrator/integrator.hpp"
 
 #include "mesh/tetmesh.hpp"
@@ -48,11 +50,15 @@ std::string PlaybackPath;
 int playbackStartIdx = 0;
 int playbackEndIdx = 0;
 
-// 
+// autoplaying
 bool autoPlaying = false;
 int currentSimFrame = 0;
 int currentPSFrame = 0;
 int framesPerUpdate = 6;
+
+// scrubbing
+bool scrubMode = false;
+int scrubFrame = 0;
 
 // TETMESH COPY
 std::unique_ptr<Geom::mesh> m;
@@ -65,6 +71,9 @@ float logE = std::log10(YM);
 int seconds = 10;
 int fps = 5;
 double spf = 1.0/fps;
+
+// Simulator type
+int sIdx = 0;   // 0 for BDF-1, 1 for BDF-2
 
 // Energy and Forces
 int eIdx = 0;   // 0 for SNH, 1 for ARAP
@@ -132,9 +141,15 @@ void solveDeformation() {
     // Declare solver
     std::unique_ptr<Solver::integrator> timestepper;
 
-    std::cout << "SOLVER: " << "BDF-1\n" << std::endl; // Change if using a different solver
-    // BDF1
-    timestepper = std::make_unique<Solver::BDF1>(*m, *e, t, R, constraints, gravity);
+    if (sIdx == 0) {
+        // BDF1
+        std::cout << "SOLVER: " << "BDF-1\n" << std::endl; // Change if using a different solver
+        timestepper = std::make_unique<Solver::BDF1>(*m, *e, t, R, constraints, gravity);
+    } else {
+        // BDF2
+        std::cout << "SOLVER: " << "BDF-2\n" << std::endl; // Change if using a different solver
+        timestepper = std::make_unique<Solver::BDF2>(*m, *e, t, R, constraints, gravity);
+    }
 
     std::vector<int> progress(2);
     progress[0] = playbackStartIdx;
@@ -219,16 +234,18 @@ void myCallback() {
 
     // Deformation stuff
     if (ImGui::Button("Compute Deformation")) {
-        constraintMode = false;
         if (loadingMode) {
             std::cout << "Currently in loading mode. Run without flags to solve for a deformation." << std::endl;
         } else {
+            constraintMode = false;
+            scrubMode = false;
             autoPlaying = false;
             solveDeformation();
         }
     }
 
     if (ImGui::Button(autoPlaying ? "Stop Playback" : "Playback")) {
+        scrubMode = false;  // Enforce this
         if (playbackEndIdx == 0) {
             std::cout << "No simulation initialized. Cannot perform playback" << std::endl;
         } else {
@@ -248,6 +265,7 @@ void myCallback() {
     // Updates the frame every specified number of frames
     if (autoPlaying) {
         constraintMode = false; // Enforce this to avoid confusion
+        scrubMode = false;
         if (currentPSFrame % framesPerUpdate == 0) {    // One update every num frames
             std::string framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f" + std::to_string(currentSimFrame) + ".txt";   // Update the saved file name
             playback(framePath);
@@ -262,6 +280,34 @@ void myCallback() {
         // update polyscope frame
         currentPSFrame = (currentPSFrame+1)%framesPerUpdate;
     }
+
+    ImGui::SameLine();
+    if (ImGui::Button(scrubMode ? "Stop Scrubbing" : "Scrubbing")) {
+        // Enforce no other modes allowed
+        autoPlaying = false;
+        constraintMode = false;
+        if (playbackEndIdx == 0) {
+            std::cout << "No simulation initialized. Cannot perform scrubbing" << std::endl;
+        } else {
+            scrubMode = !scrubMode;
+            if (scrubMode) {
+                std::cout << "Starting Scrub Mode." << std::endl;
+                currentSimFrame = playbackStartIdx;
+                // Get the nearest number of frames at 60 fps
+                // I'm paranoid...
+                framesPerUpdate = std::max(1, static_cast<int>(60/fps));
+            } else {
+                std::cout << "Stopping Scrub Mode" << std::endl;
+            }
+        }
+    }
+
+    if (ImGui::SliderInt("Scrub Frame", &scrubFrame, playbackStartIdx, playbackEndIdx) && scrubMode) {   // We can only scrub when not autoplaying
+        // Allow frame selection
+        std::string framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f" + std::to_string(scrubFrame) + ".txt";   // Update the saved file name
+        playback(framePath);
+    }
+
 
     if (ImGui::Button(constraintMode ? "Stop Applying Constraints" : "Apply Constraint")) {
         if (loadingMode) {
@@ -316,6 +362,11 @@ void myCallback() {
     }
     ImGui::Text("Timestep = %.3e", spf);
 
+    // Simulator
+    ImGui::RadioButton("BDF-1", &sIdx, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("BDF-2", &sIdx, 1);
+
     // Energies
     ImGui::RadioButton("SNH", &eIdx, 0);
     ImGui::SameLine();
@@ -352,6 +403,7 @@ int main(int argc, char **argv) {
             try {
                 loadingMode = true;
                 playbackStartIdx = std::stoi(argv[i+1]);   // This will get the file ex. savedfile_f3.txt
+                scrubFrame = playbackStartIdx;
                 playbackEndIdx = playbackStartIdx + std::stoi(argv[i+2]);  // This will go up to the file ex. savedfile_f7.txt
             } catch (const std::invalid_argument& e) {
                 std::cerr << "Invalid input for --p.\n";
@@ -368,6 +420,13 @@ int main(int argc, char **argv) {
     polyscope::state::userCallback = myCallback;
 
     polyscope::init();
+
+    // Set camera view
+    polyscope::view::setUpDir(polyscope::UpDir::ZUp);      // Z up
+    polyscope::view::setFrontDir(polyscope::FrontDir::NegYFront); // -Y forward
+
+    // Set projection to orthographic
+    polyscope::view::setProjectionMode(polyscope::ProjectionMode::Orthographic);
 
     // Load our tet mesh object
     std::vector<Eigen::Vector3d> V;

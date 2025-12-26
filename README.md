@@ -1,4 +1,7 @@
 # 524FinalProject: Dynamic Deformables
+
+https://github.com/user-attachments/assets/0b72c7e1-f630-4530-8afb-82ff3ead77ce
+
 *NOTE: This is a work-in-progress that I am hoping to add to in the future!*
 
 This repository contains my implementation of the isotropic volumetric deformation portion of Dynamic Deformables by Theodore Kim and David Eberle (2022) as my final project for CPSC524: Geometric Modeling. It specifically implements the BDF-1 integration scheme for tetrahedral meshes, with support for Rayleigh Damping and external forces. The elastic energies implemented thus far are As-Rigid-As-Possible (ARAP) and Stable Neo-Hookean (SNH). Because there is a reference implementation (HOBAK), I admit that took heavy inspiration from HOBAK's organizational structure. However, almost all of the code is self written. See the **Academic Honesty** section below for more details on this. Links to the references used are below:

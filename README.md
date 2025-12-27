@@ -39,7 +39,7 @@ This will create an executable in the build folder called *deformation_app*.
 
 # Generating a Deformation
 
-To run the project, you will need a path to a TOBJ file (see Data folder or HOBAK (https://github.com/theodorekim/HOBAKv1)) as well as a *generic path* to your output location. Since this project performs offline deformation on potentially large meshes, I opted to save deformations as sequences of files which are loaded as needed on a per-frame basis during playback. This requires a generic output path (ex. ./output/mymesh.txt) which describes the folder and file prefix to dump sequences to. The general format to run the project from the build folder is as follows:
+To run the project, you will need a path to a TOBJ file (see Data folder or HOBAK (https://github.com/theodorekim/HOBAKv1)) as well as a *generic path* to your output location. Since this project performs offline deformation on potentially large meshes, I opted to save deformations as sequences of files which are loaded as needed on a per-frame basis during playback. This requires a generic output path (ex. ./output/mymesh.txt) as a TXT which describes the folder and file prefix to dump sequences to. The general format to run the project from the build folder is as follows:
 
 ```
 ./deformation_app <path_to_input_tobj> <generic_output_path>

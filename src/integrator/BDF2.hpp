@@ -9,18 +9,18 @@
 #include <Eigen/Sparse>
 #include <string>
 
-// A class for BDF1
+// A class for BDF2
 namespace Solver {
 
 class BDF2 : public integrator {
     public:
-        BDF2(Geom::mesh& m, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext);
+        BDF2(Geom::mesh& m, Geom::mesh& m_p, Geom::mesh& m_start, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext);
 
-        int TimeStep() override;
+        double TimeStep(Eigen::VectorXd& dv) override;
     protected:
         // The integrator class already defines most of our functions for us, so BDF1 just needs to
         // call the appropriate functions and assemble the system.
-        void initializePV_p();
+        void initializePV_p(Geom::mesh& m_start);
 
         // Since prefiltering is standardized, we also let the parent function do that
         
@@ -30,7 +30,7 @@ class BDF2 : public integrator {
         Eigen::VectorXd assembleRHS(Eigen::VectorXd& f_elast, Eigen::VectorXd& f_damp, Eigen::VectorXd& f_ext, Eigen::SparseMatrix<double>& K) override;
 
         // Assemble all system parts
-        void buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) override;
+        double buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) override;
 
         // Previous positions
         Eigen::VectorXd positions_p;

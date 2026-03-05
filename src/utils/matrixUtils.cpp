@@ -24,6 +24,27 @@ double solveLambda(double E, double V) {
     return (E*V/((1+V)*(1-2*V)));
 }
 
+// Converts a 3n x 1 vector to an nx3 vector
+Eigen::MatrixXd foldVector3d(Eigen::VectorXd& p) {
+    int numvals = p.size() / 3;
+    Eigen::MatrixXd p_folded(numvals, 3);
+
+    for (int i = 0; i < numvals; i++) {
+        p_folded(i, 0) = p(3*i);
+        p_folded(i, 1) = p(3*i + 1);
+        p_folded(i, 2) = p(3*i + 2);
+    }
+    return p_folded;
+}
+
+double computeTetVolume(std::vector<Eigen::Vector3d> tet_verts) {
+    Eigen::Vector3d diff1 = tet_verts[1] - tet_verts[0];
+    Eigen::Vector3d diff2 = tet_verts[2] - tet_verts[0];
+    Eigen::Vector3d diff3 = tet_verts[3] - tet_verts[0];
+    double vol = ((diff3.dot((diff1).cross(diff2)) / 6.0));
+    return vol;
+}
+
 // Cross product matrix (little hat)
 Utils::Matrix3d crossProdMatrix(Utils::Vector3d x) {
     Utils::Matrix3d x_hat;

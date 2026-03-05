@@ -2,12 +2,19 @@
 #include <Eigen/Dense>
 
 #include "EigenTypes.hpp"
+#include "polyscope/volume_mesh.h"
 #include <glm/vec3.hpp>
 #include <array>
 #include <string>
 #include <vector>
 
 namespace IO {
+
+// GLM::vec3 to Eigen::Vector3d converter
+Eigen::Vector3d glmToEigen(glm::vec3 input);
+
+// Eigen::Vector3d to GLM::vec3 converter
+glm::vec3 eigenToGLM(Eigen::Vector3d input);
 
 // Function to load TOBJ files (as specified in DD and HOBAK)
 bool loadTOBJ(
@@ -24,6 +31,13 @@ void polyscopeTetConverter(
     std::vector<glm::vec3>& V,
     std::vector<std::array<size_t, 4>>& T
 );
+
+// Function to convert a polyscope tetmesh into a version readable by our tetmesh class
+void convertPolyscopeToEigen(
+    const std::vector<glm::vec3>& ps_verts,
+    const std::vector<std::array<size_t, 4>>& ps_connectivity,
+    std::vector<Eigen::Vector3d>& verts,
+    std::vector<std::vector<int>>& tets);
 
 
 // writes current state to a txt file

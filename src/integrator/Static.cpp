@@ -1,4 +1,4 @@
-#include "BDF1.hpp"
+#include "Static.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Sparse>
@@ -11,17 +11,63 @@
 #include "energy/arap.hpp"
 #include "energy/snh.hpp"
 
-// Tools for BDF1 Velocity-based implicit integration
+// Tools for Static Solving position-based static equilibrium
 namespace Solver {
 
-// Take a single timestep
-double BDF1::TimeStep(Eigen::VectorXd& dv) {
+Static::Static(Geom::mesh& m, Geom::mesh& m_start, energy::Energy& e, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext) :
+    integrator(m, m_start, e, c, a_ext) {
+}
+
+// Line search using a starting alpha 
+// returns -1.0 when an error has occurred.
+double Static::LineSearch(double start_alpha) {
+    double min_alpha = 1e-6;
+    bool inversion = true;
+    double alpha = start_alpha;
+
+    Eigen::VectorXd dx;
+    double residual;
+    do {
+        residual = TimeStep(dx);
+
+        // Check for inversion
+        if (residual < 0.0) {
+            alpha = alpha/2.0;
+            std::cout << "    - Step size resulted in inverted elements. Reducing step size by half: " << alpha << std::endl;
+        } else {   // acceptable step
+            std::cout << "    - Step size of " << alpha << " is successful." << std::endl;
+            inversion = false;
+        }
+
+        // Reduce alpha
+        if (alpha <= min_alpha && inversion) {
+            std::cout << "    - Step size reduced to minimum (<=" << min_alpha << ") without convergence. Terminating." << std::endl;
+            break;
+        }
+    } while(inversion);
+    // Completed one iteration successfully, so we can add to positions
+    if (!inversion) {
+        // Update positions using the constraints
+        std::cout << "    Updating positions" << std::endl;
+        // Update positions
+        positions_t += alpha * (dx);
+        return residual;
+    }
+    return -1.0;
+}
+
+// Take a single Newton step for our solver
+double Static::TimeStep(Eigen::VectorXd& dx) {
     Eigen::SparseMatrix<double> _A;
     Eigen::VectorXd _b;
     Eigen::VectorXd _z;
     // Build system matrices
     std::cout << "    Building System" << std::endl;
-    buildSystem(_A, _b, _z);
+    double success = buildSystem(_A, _b, _z);
+    // If building system failed, then that means there was an element inversion
+    if (success < 0.0) {
+        return -1.0;
+    }
 
     // Solve system using Eigen's Conjugate Gradient
     std::cout << "    Solving System" << std::endl;
@@ -29,42 +75,39 @@ double BDF1::TimeStep(Eigen::VectorXd& dv) {
     solver.compute(_A);
     Eigen::VectorXd _y = solver.solve(_b);
 
-    // Update velocities using the constraints
-    std::cout << "    Updating positions and velocities" << std::endl;
-    velocities_t += (_y + _z);
-    // Update positions
-    positions_t += h*velocities_t;
-
+    dx = _y + _z;
     // If we have a bad value, terminate the simulator
-    if (!velocities_t.allFinite() || !positions_t.allFinite()) {
-        return 0.0;
+    if (!dx.allFinite()) {
+        return -1.0;
     }
-    return 1.0;
+    // Compute residual
+    double res_size = _b.norm();
+    return res_size;
 }
 
-// Assemble the velocity coffecient (LHS)
-Eigen::SparseMatrix<double> BDF1::assembleLHS(Eigen::SparseMatrix<double>& M, Eigen::SparseMatrix<double>& C, Eigen::SparseMatrix<double>& K) {
-    return (M + h*C - h*h*K);
+// Assemble LHS
+Eigen::SparseMatrix<double> Static::assembleLHS(Eigen::SparseMatrix<double>& K) {
+    return -1 * K;
 }
 
 // Compute the force vector (RHS)
-Eigen::VectorXd BDF1::assembleRHS(Eigen::VectorXd& f_elast, Eigen::VectorXd& f_damp, Eigen::VectorXd& f_ext, Eigen::SparseMatrix<double>& K) {
-    return (h*(f_elast + f_damp + f_ext) + (h*h * K)*velocities_t);
+Eigen::VectorXd Static::assembleRHS(Eigen::VectorXd& f_ext, Eigen::VectorXd& f_int) {
+    return (f_int - f_ext);
 }
 
 // Assemble system
 // Note we're doing this and returning just the matrices so that I'm not hogging extra memory during the system solve
-double BDF1::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
+double Static::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
     Eigen::SparseMatrix<double> K(_m.dim*_m.n, _m.dim*_m.n);  // Stiffness Matrix
     Eigen::SparseMatrix<double> C(_m.dim*_m.n, _m.dim*_m.n);  // Damping Matrix
     std::vector<T> tripletK;
     tripletK.reserve((_m.dim*_m.verts_per_el)*(_m.dim*_m.verts_per_el)*_m.num_t);   // (3x4)x(3x4) x tets
 
     // Eigen::VectorXd f_ext(_m.dim * n);  // External forces are already pre-computed
-    Eigen::VectorXd f_damp(_m.dim * _m.n); // Damping force
-    Eigen::VectorXd f_elast(_m.dim * _m.n);    // Elastic force
-    f_damp.setZero();
-    f_elast.setZero();
+    Eigen::VectorXd f_int(_m.dim * _m.n);    // Internal elastic force
+    f_int.setZero();
+
+    double J_min = 0.05;   // Minimum element size
 
     // Loop over elements to generate stiffness matrix
     for (int t = 0; t < _m.num_t; t++) {
@@ -83,6 +126,11 @@ double BDF1::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd&
         Eigen::MatrixXd D_mInv = _m.D_mInv[t];
         // Compute Deformation gradient (3x3)
         Utils::Matrix3d F = Utils::computeF(D_mInv, verts_new);
+        // If determinant inverts the element
+        double J = Utils::computeI3(F);
+        if (J <= J_min) {
+            return -1.0;
+        }
         // Compute dF/dx (3x3)
         Eigen::MatrixXd dFdx = Utils::computedFdx(D_mInv);
         // Compute PK1 for force computation (3x3)
@@ -112,24 +160,23 @@ double BDF1::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd&
         // Insert into elastic forces
         for (int v = 0; v < _m.verts_per_el; v++) {
             for (int d = 0; d < _m.dim; d++) {
-                f_elast(_m.dim*(v_idxs[v])+d) += (localF(_m.dim*v+d));
+                f_int(_m.dim*(v_idxs[v])+d) += (localF(_m.dim*v+d));
             }
         }
     }
     K.setFromTriplets(tripletK.begin(), tripletK.end());
 
     // Construct A using K and M
-    if (Rayleigh) { // With Rayleigh Damping
-        C = (alpha)*M + (beta)*K;
-        f_damp = -1 * (C * velocities_t);
-    }   // Else leave it as 0
+    std::cout << "    internal force norm: " << f_int.norm() << std::endl;
 
-    Eigen::SparseMatrix<double> A = assembleLHS(M, C, K);
-    Eigen::VectorXd b = assembleRHS(f_elast, f_damp, f_ext, K);
+    Eigen::SparseMatrix<double> A = assembleLHS(K);
+    Eigen::VectorXd b = assembleRHS(f_ext, f_int);
 
     // Apply Constraints via Prefiltering
     preFilteringA(A, A_global);
-    assembleZ(z_global);
+    //assembleZ(z_global);
+    z_global.resize(b.size());
+    z_global.setZero();
     preFilteringb(A, b, z_global, b_global);
 
     return 1.0;

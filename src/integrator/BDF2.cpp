@@ -14,28 +14,28 @@
 // Tools for BDF2 Velocity-based implicit integration
 namespace Solver {
 
-BDF2::BDF2(Geom::mesh& m, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext):
-    integrator(m, e, t, R, c, a_ext) {
-    initializePV_p();
+BDF2::BDF2(Geom::mesh& m, Geom::mesh& m_p, Geom::mesh& m_start, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext):
+    integrator(m, m_start, e, t, R, c, a_ext) {
+    initializePV_p(m_p);
 }
 
 // Initialize previous states
-void BDF2::initializePV_p() {
+void BDF2::initializePV_p(Geom::mesh& m_p) {
     positions_p.resize(_m.dim * _m.n);
     velocities_p.resize(_m.dim * _m.n);
 
     for (int v = 0; v < _m.n; v++) {    // Initialize current position to original
         //std::cout << "Vertex " << v << ": " << _m.v[v](0) << ", " << _m.v[v](1) << ", " << _m.v[v](2) << std::endl;
-        positions_p(_m.dim*v) = _m.v[v](0);
-        positions_p(_m.dim*v+1) = _m.v[v](1);
-        positions_p(_m.dim*v+2) = _m.v[v](2);
+        positions_p(_m.dim*v) = m_p.v[v](0);
+        positions_p(_m.dim*v+1) = m_p.v[v](1);
+        positions_p(_m.dim*v+2) = m_p.v[v](2);
     }
     velocities_p.setZero();   // Set initial velocities to 0
     return;
 }
 
 // Take a single timestep
-int BDF2::TimeStep() {
+double BDF2::TimeStep(Eigen::VectorXd& dv) {
     Eigen::SparseMatrix<double> _A;
     Eigen::VectorXd _b;
     Eigen::VectorXd _z;
@@ -68,9 +68,9 @@ int BDF2::TimeStep() {
 
     // If we have a bad value, terminate the simulator
     if (!velocities_t.allFinite() || !positions_t.allFinite()) {
-        return 0;
+        return 0.0;
     }
-    return 1;
+    return 1.0;
 }
 
 // Assemble the velocity coffecient (LHS)
@@ -85,7 +85,7 @@ Eigen::VectorXd BDF2::assembleRHS(Eigen::VectorXd& f_elast, Eigen::VectorXd& f_d
 
 // Assemble system
 // Note we're doing this and returning just the matrices so that I'm not hogging extra memory during the system solve
-void BDF2::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
+double BDF2::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
     Eigen::SparseMatrix<double> K(_m.dim*_m.n, _m.dim*_m.n);  // Stiffness Matrix
     Eigen::SparseMatrix<double> C(_m.dim*_m.n, _m.dim*_m.n);  // Damping Matrix
     std::vector<T> tripletK;
@@ -123,7 +123,7 @@ void BDF2::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b
         // Compute Hessian
         // Eigen::MatrixXd Hessian = _e.computeHessian(F);
         // Compute definite version of the Hessian (clamped/projected)
-        Utils::Matrix9d clampedHessian = _e.computeClampedHessian(F);
+        Utils::Matrix9d clampedHessian = _e.computePSDHessian(F);
         // Multiply Hessian to get force derivative (12x12)
         Eigen::MatrixXd localK = elementElasticGradient(vol, clampedHessian, dFdx);
         // Symmetrize K (should already be symmetrical!)
@@ -163,7 +163,7 @@ void BDF2::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b
     assembleZ(z_global);
     preFilteringb(A, b, z_global, b_global);
 
-    return;
+    return 1.0;
 }
 
 } // namespace Solver

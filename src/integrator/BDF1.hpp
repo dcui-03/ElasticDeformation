@@ -15,7 +15,7 @@ namespace Solver {
 class BDF1 : public integrator {
     public:
         using integrator::integrator;
-        int TimeStep() override;
+        double TimeStep(Eigen::VectorXd& dv) override;
     protected:
         // The integrator class already defines most of our functions for us, so BDF1 just needs to
         // call the appropriate functions and assemble the system.
@@ -28,7 +28,7 @@ class BDF1 : public integrator {
         Eigen::VectorXd assembleRHS(Eigen::VectorXd& f_elast, Eigen::VectorXd& f_damp, Eigen::VectorXd& f_ext, Eigen::SparseMatrix<double>& K) override;
 
         // Assemble all system parts
-        void buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) override;
+        double buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) override;
     
     private:
         std::string integrator_type = "BDF-1";

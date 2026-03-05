@@ -14,6 +14,24 @@
 
 namespace IO {
 
+// GLM::vec3 to Eigen::Vector3d converter
+Eigen::Vector3d glmToEigen(glm::vec3 input) {
+    Eigen::Vector3d output;
+    output(0) = static_cast<double>(input.x);
+    output(1) = static_cast<double>(input.y);
+    output(2) = static_cast<double>(input.z);
+    return output;
+}
+
+// Eigen::Vector3d to GLM::vec3 converter
+glm::vec3 eigenToGLM(Eigen::Vector3d input) {
+    glm::vec3 output;
+    output.x = static_cast<float>(input(0));
+    output.y = static_cast<float>(input(1));
+    output.z = static_cast<float>(input(2));
+    return output;
+}
+
 // Function to load TOBJ files (as specified in DD and HOBAK)
 bool loadTOBJ(
     const std::string& path,
@@ -25,6 +43,8 @@ bool loadTOBJ(
     if (!in.is_open()) {
         throw std::runtime_error("loadTOBJ: failed to open file: " + path);
     }
+    outVertices.clear();
+    outTets.clear();
 
     std::string line;
     size_t lineNo = 0;
@@ -97,6 +117,8 @@ void polyscopeTetConverter(
     std::vector<glm::vec3>& V,
     std::vector<std::array<size_t, 4>>& T
 ) {
+    V.clear();
+    T.clear();
     // 1) Convert vertex positions to glm::vec3
     V.reserve(V_eigen.size());
     for (const auto& p : V_eigen) {
@@ -132,6 +154,46 @@ void polyscopeTetConverter(
     return;
 }
 
+void convertPolyscopeToEigen(
+    const std::vector<glm::vec3>& ps_verts,
+    const std::vector<std::array<size_t, 4>>& ps_connectivity,
+    std::vector<Eigen::Vector3d>& verts,
+    std::vector<std::vector<int>>& tets)
+{
+    // ---------- Copy vertex positions ----------
+    verts.resize(ps_verts.size());
+
+    for (size_t i = 0; i < ps_verts.size(); ++i) {
+        const glm::vec3& p = ps_verts[i];
+        verts[i] = Eigen::Vector3d(
+            static_cast<double>(p.x),
+            static_cast<double>(p.y),
+            static_cast<double>(p.z)
+        );
+    }
+
+    // ---------- Copy connectivity ----------
+    tets.resize(ps_connectivity.size());
+
+    for (size_t i = 0; i < ps_connectivity.size(); ++i) {
+
+        const std::array<size_t, 4>& tet = ps_connectivity[i];
+
+        tets[i].resize(4);
+
+        for (int j = 0; j < 4; ++j) {
+
+            // Optional safety check
+            if (tet[j] >= ps_verts.size()) {
+                throw std::runtime_error(
+                    "convertPolyscopeTetToEigen(): connectivity index out of bounds."
+                );
+            }
+
+            tets[i][j] = static_cast<int>(tet[j]);
+        }
+    }
+}
 
 // writes current state to a txt file
 void writeStateToTxt(

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <cmath>
+#include <map>
 #include <tuple>
 #include <array>
 #include <vector>
@@ -23,6 +24,7 @@
 #include "energy/snh.hpp"
 #include "energy/energy.hpp"
 
+#include "integrator/Static.hpp"
 #include "integrator/BDF1.hpp"
 #include "integrator/BDF2.hpp"
 #include "integrator/integrator.hpp"
@@ -41,14 +43,23 @@ using Clock = std::chrono::high_resolution_clock;
 bool loadingMode = false;
 
 // Handles for the tet mesh and point cloud
+std::vector<glm::vec3> psV;
+std::vector<std::array<size_t, 4>> psT;
 polyscope::VolumeMesh* psMesh;
 polyscope::PointCloud* psConstraintPC;
+bool showPC;
 
 // VARIABLES FOR PARSING AND WRITING FILES
 std::string InputPath;
 std::string PlaybackPath;
 int playbackStartIdx = 0;
 int playbackEndIdx = 0;
+
+// move vertices
+int selectedVertex = -1;
+bool gizmoMode = false; // This allows the user to create a gizmo
+bool activeGizmo = false; // This tells us if there is an active gizmo
+static polyscope::TransformationGizmo* vertexGizmo = nullptr;
 
 // autoplaying
 bool autoPlaying = false;
@@ -61,9 +72,13 @@ bool scrubMode = false;
 int scrubFrame = 0;
 
 // TETMESH COPY
+std::vector<Eigen::Vector3d> V;
+std::vector<std::vector<int>> T;
+std::vector<Eigen::Vector3d> V_current; // We need this for higher precision
+std::vector<std::vector<int>> T_current;
 std::unique_ptr<Geom::mesh> m;
 // TODO find a mu and lambda to initialize to
-float PR = 0.4;   // PR is usually between 0 and 0.5 (0.5 may break solve)
+float PR = 0.35;   // PR is usually between 0 and 0.5 (0.5 may break solve)
 double YM = 5e4;      // YM is usually between 1e4 and 1e6
 float logE = std::log10(YM);
 
@@ -73,7 +88,7 @@ int fps = 5;
 double spf = 1.0/fps;
 
 // Simulator type
-int sIdx = 0;   // 0 for BDF-1, 1 for BDF-2
+int sIdx = 1;   // 0 for Static, 1 for BDF-1, 2 for BDF-2
 
 // Energy and Forces
 int eIdx = 0;   // 0 for SNH, 1 for ARAP
@@ -87,11 +102,28 @@ float Gz = -9.8;
 bool constraintMode = false;
 std::vector<glm::vec3> psConstraints;
 std::vector<std::vector<Eigen::Vector3d>> constraints;
+std::map<int, int> VtoConstraint;   // Maps polyscope mesh vertex to constraint vertex
+// Constraint directions
+bool customConstraint = false;
+float Cx = 1.0;
+float Cy = 1.0;
+float Cz = 1.0;
+// Canonical Frame axes (remove these when implementing arbitrary constraints)
+Eigen::Vector3d i0 = {1, 0, 0};
+Eigen::Vector3d i1 = {0, 1, 0};
+Eigen::Vector3d i2 = {0, 0, 1};
+std::vector<Eigen::Vector3d> constraintDirecs = {i0, i1, i2};
+bool xAxis = true;
+bool yAxis = true;
+bool zAxis = true;
 
 
 // Compute Deformation given the current inputs
 void solveDeformation() {
     std::cout << "====== HYPERELASTIC DEFORMATION ======\n" << std::endl;
+    // Copy current mesh state from Polyscope
+    std::unique_ptr<Geom::mesh> m_start = std::make_unique<Geom::tetmesh>(V_current, T_current);
+
     // Get time variables
     double t = 1.0/(fps);
     playbackEndIdx = seconds * fps;
@@ -103,93 +135,155 @@ void solveDeformation() {
     std::unique_ptr<energy::Energy> e;
     double mu = Utils::solveMu(static_cast<double>(YM), static_cast<double>(PR));
     double lambda = Utils::solveLambda(static_cast<double>(YM), static_cast<double>(PR));
+    bool abs = (PR >= 0.49);
+
     
     if (eIdx == 0) {    // SNH
         std::cout << "ENERGY: Stable Neo-Hookean\n" << std::endl;
-        e = std::make_unique<energy::SNH>(mu, lambda);
+        e = std::make_unique<energy::SNH>(mu, lambda, abs);
     } else {            // ARAP
         std::cout << "ENERGY: As-Rigid-As-Possible\n" << std::endl;
-        e = std::make_unique<energy::ARAP>(mu, lambda);
+        e = std::make_unique<energy::ARAP>(mu, lambda, abs);
     }
     std::cout << "Lamé Parameters (mu, lambda): (" << mu << ", " << lambda << ")" << std::endl;
+    if (abs) {
+        std::cout << "Material is highly incompressible (Poisson's Ratio -> 0.5). For stability, PSD Hessian computed using ABS rule." << std::endl;
+    } else {
+        std::cout << "Material is compressible. PSD Hessian computed using CLAMP rule." << std::endl;
+    }
 
     // Damping
-    if (R) {
+    if (R && sIdx != 0) {
         std::cout << "DAMPING: Rayleigh Damping" << std::endl;
     } else {
         std::cout << "DAMPING: None" << std::endl;
+        R = false;
     }
     // Decide on external force
     Eigen::Vector3d gravity = {static_cast<double>(Gx), static_cast<double>(Gy), static_cast<double>(Gz)}; // Change this for 2D
-    if (G) {
+    if (G && sIdx != 0) {
         std::cout << "EXT. FORCE: USER-DEFINED" << std::endl;
         std::cout << "    (" << gravity(0) << ", " << gravity(1) << ", " << gravity(2) << ")\n" << std::endl;
     } else {
         std::cout << "EXT. FORCE: None\n" << std::endl;
         gravity(0) = 0.0; gravity(1) = 0.0; gravity(2) = 0.0;
+        G = false;
     }
 
     // Constraints
     std::cout << "CONSTRAINTS: " << std::endl;
     for (int v = 0; v < constraints.size(); v++) {
         if (constraints[v].size() != 0) {
-            std::cout << "    - Vertex " << v << ": " << "[x, y, z]" << std::endl;  // Locking all components for simplicity
+            std::cout << "    - Vertex " << v << ": ";
+            for (int c = 0; c < constraints[v].size(); c++) {
+                std::cout << "[" << constraints[v][c][0] << ", " <<
+                                    constraints[v][c][1] << ", " << 
+                                    constraints[v][c][2] << "]";
+                if (c != constraints.size()-1) {
+                    std::cout << ";  ";
+                }
+            }
+            std::cout << std::endl;
         }
     }
     std::cout << std::endl;
 
+    // Number of frames
+    std::vector<int> progress(2);
+    progress[0] = playbackStartIdx;
+    progress[1] = playbackEndIdx;
+    int num_frames = progress[1] - progress[0];
+    
     // Declare solver
     std::unique_ptr<Solver::integrator> timestepper;
 
     if (sIdx == 0) {
+        num_frames = 0;
+        // Static solver
+        std::cout << "SOLVER: " << "Static\n" << std::endl; // Change if using a different solver
+        timestepper = std::make_unique<Solver::Static>(*m, *m_start, *e, constraints, gravity);
+    } else if (sIdx == 1) {
         // BDF1
         std::cout << "SOLVER: " << "BDF-1\n" << std::endl; // Change if using a different solver
-        timestepper = std::make_unique<Solver::BDF1>(*m, *e, t, R, constraints, gravity);
-    } else {
+        timestepper = std::make_unique<Solver::BDF1>(*m, *m_start, *e, t, R, constraints, gravity);
+    } else if (sIdx == 2) {
         // BDF2
         std::cout << "SOLVER: " << "BDF-2\n" << std::endl; // Change if using a different solver
-        timestepper = std::make_unique<Solver::BDF2>(*m, *e, t, R, constraints, gravity);
+        // NOTE: The second input should be the previous state for BDF2. Here we assume it was the same as the current start
+        timestepper = std::make_unique<Solver::BDF2>(*m, *m_start, *m_start, *e, t, R, constraints, gravity);
     }
-
-    std::vector<int> progress(2);
-    progress[0] = playbackStartIdx;
-    progress[1] = playbackEndIdx;
 
     // Save the starting state
     std::string framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f0.txt";   // Update the saved file name
     IO::writeStateToTxt(framePath, timestepper->positions_t, timestepper->velocities_t, m->dim, progress);
     double totalTime = 0.0; // Timekeeper!
 
-    // Iteratively solve each frame
-    std::cout << "====== NOW SOLVING DEFORMATION ======" << std::endl; // Change if using a different solver
-    for (int frame = 0; frame < playbackEndIdx; frame++) {
-        auto t_start = Clock::now(); // Time starts NOW!
-        progress[0]++;  // Update the frame count
-        std::cout << "COMPUTING FRAME " << progress[0] << " OF " << progress[1] << std::endl;
-        framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f" + std::to_string(progress[0]) + ".txt";   // Update the saved file name
-        // Solve the system
-        int success = timestepper->TimeStep();
+    Eigen::VectorXd delta;   // Dx or dv
+
+    if (sIdx != 0) {
+        // Iteratively solve each frame
+        std::cout << "====== NOW SOLVING DEFORMATION ======" << std::endl; // Change if using a different solver
+        for (int frame = 0; frame < playbackEndIdx; frame++) {
+            auto t_start = Clock::now(); // Time starts NOW!
+            progress[0]++;  // Update the frame count
+            std::cout << "COMPUTING FRAME " << progress[0] << " OF " << progress[1] << std::endl;
+            framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f" + std::to_string(progress[0]) + ".txt";   // Update the saved file name
+            // Solve the system
+            int success = timestepper->TimeStep(delta);
+            // save positions and velocities
+            IO::writeStateToTxt(framePath, timestepper->positions_t, timestepper->velocities_t, m->dim, progress);
+            std::cout << "    Frame saved to <" << framePath << ">" << std::endl;
+
+            auto t_end = Clock::now();
+            std::chrono::duration<double> elapsed = t_end - t_start;
+            std::cout << "    Frame computation time: " << elapsed.count() << " seconds\n" << std::endl;
+            totalTime += elapsed.count();
+
+            // If simulator failed or caught a bad value like a nan then terminate here
+            if (success == 0) {
+                std::cout << "SIMULATION TERMINATED at frame " << frame << " due to unexpected output (ex. nan)" << std::endl;
+                std::cout << "See dumped frame file for more information" << std::endl;
+                playbackEndIdx = frame;
+                break;
+            }
+        }
+    } else {
+        double residual;
+        int max_frames = 5e2;
+        double min_residual = 1e-5;
+        double alpha = 1.0;
+        std::cout << "Solving static equilibrium via Newton iterations." << std::endl;
+        do {
+            auto t_start = Clock::now(); // Time starts NOW!
+            std::cout << "COMPUTING ITERATION " << num_frames + 1 << std::endl;
+            residual = timestepper->LineSearch(alpha);
+            if (residual < 0.0) {
+                std::cout << "\nSOLVER TERMINATED at iteration " << num_frames + 1 << " due to unexpected output (ex. nan, inverted element)" << std::endl;
+                break;
+            }
+            std::cout << "    Residual: " << residual << "\n" << std::endl;
+
+            auto t_end = Clock::now();
+            std::chrono::duration<double> elapsed = t_end - t_start;
+            std::cout << "    Iteration computation time: " << elapsed.count() << " seconds\n" << std::endl;
+            totalTime += elapsed.count();
+            num_frames++;
+        } while (residual > min_residual && num_frames < max_frames);
+        if (residual <= min_residual) {
+            std::cout << "\nStatic Solver Converged." << std::endl;
+        } else if (num_frames >= max_frames) {
+            std::cout << "\nExceeded iteration count. Stopping." << std::endl;
+        }
+        framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f1.txt";   // Update the saved file name
         // save positions and velocities
         IO::writeStateToTxt(framePath, timestepper->positions_t, timestepper->velocities_t, m->dim, progress);
         std::cout << "    Frame saved to <" << framePath << ">" << std::endl;
-        auto t_end = Clock::now();
-        std::chrono::duration<double> elapsed = t_end - t_start;
-        std::cout << "    Frame computation time: " << elapsed.count() << " seconds\n" << std::endl;
-        totalTime += elapsed.count();
-
-        // If simulator failed or caught a bad value like a nan then terminate here
-        if (success == 0) {
-            std::cout << "SIMULATION TERMINATED at frame " << frame << " due to unexpected output (ex. nan)" << std::endl;
-            std::cout << "See dumped frame file for more information" << std::endl;
-            playbackEndIdx = frame;
-            break;
-        }
     }
 
     std::cout << "\n====== ALL FRAMES COMPUTED ======" << std::endl;
     // TODO maybe print some quantities like timing, etc.?
     std::cout << "Total Simulation Time: " << totalTime << " seconds" << std::endl;
-    std::cout << "Avg. Simulation Time Per Frame: " << totalTime / (playbackEndIdx - playbackStartIdx) << " seconds\n" << std::endl;
+    std::cout << "Avg. Simulation Time Per Frame: " << totalTime / (std::max(1, num_frames)) << " seconds\n" << std::endl;
     std::cout << "Press the PLAYBACK button to visualize deformation." << std::endl;
     return;
 }
@@ -197,24 +291,143 @@ void solveDeformation() {
 void playback(std::string& framePath) {
     // Note there are playbackEndIdx+1 frames since we include the rest frame
     // read this frame's positions and velocities
-    std::vector<glm::vec3> V_glm;
-    IO::readStateTxtToPS(framePath, V_glm, m->n);
+    IO::readStateTxtToPS(framePath, psV, m->n);
     // Update positions in mesh
-    psMesh->updateVertexPositions(V_glm);
+    psMesh->updateVertexPositions(psV);
+    // Update positions in point cloud
+    for (const auto& pair : VtoConstraint) {
+        psConstraints[pair.second] = psV[pair.first];
+    }
+    psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+}
+
+
+void beginVertexEdit(int vert_idx) {
+    glm::vec3 startpos = psV[vert_idx];
+
+    activeGizmo = true;
+    if (!vertexGizmo) {
+    vertexGizmo = polyscope::addTransformationGizmo("vertex_editor");
+    vertexGizmo->setAllowTranslation(true);
+    vertexGizmo->setAllowRotation(false);
+    vertexGizmo->setAllowScaling(false);
+    vertexGizmo->setInteractInLocalSpace(false);
+    //vertexGizmo->setGizmoSize(0.5f);
+    }
+
+    // place gizmo at vertex position
+    vertexGizmo->setPosition(startpos);
+}
+
+void endVertexEdit() {
+    if (!activeGizmo) return;
+
+    if (vertexGizmo) {
+        vertexGizmo->remove();
+        vertexGizmo = nullptr;
+    }
+    activeGizmo = false;
+    return;
 }
 
 // Add constraints of a vertex to the constraint vector
 // So far, can only lock all dims in the major axis directions
 // TODO Future: Enable locking in arbitrary direction individually (as long as 3 direcs are orthoNORMAL)
-void addConstraintToVector(int v_idx) {    // Need to generalize this to all dims.
-    // For now, just lock all components
-    Eigen::Vector3d i0 = {1, 0, 0};
-    Eigen::Vector3d i1 = {0, 1, 0};
-    Eigen::Vector3d i2 = {0, 0, 1};
+bool addConstraintToVector(int v_idx, std::vector<int> direcIndices) {    // Need to generalize this to all dims.
+    // If our vertex is already fully constrained, ignore.
+    if (constraints[v_idx].size() >= 3) {
+        return false;
+    }
+    bool success = false;
+    std::vector<bool> to_add(direcIndices.size());
+    for (int i = 0; i < to_add.size(); i++) {
+        to_add[i] = true;
+    }
+    // Note: we can only take 3 independent direcs maximum before we hit redundancy
+    // In a full implementation, we need to create actual orthonormal vectors (i.e., check via projection, cull parallel, then normalize what remains)
+    // Check which vectors are not already represented
+    for (int i = 0; i < direcIndices.size(); i++) {
+        int axis = direcIndices[i];
+        for (int j = 0; j < constraints[v_idx].size(); j++) {
+            if (constraints[v_idx][j] == constraintDirecs[axis]) {
+                to_add[i] = false;
+            }
+        }
+    }
+    // Add constraint vectors in, so long as we don't exceed 3
+    int num_total = constraints[v_idx].size();
+    for (int i = 0; i < to_add.size(); i++) {
+        if (num_total >= 3) {
+            break;
+        }
+        if (to_add[i] == true) {
+            success = true;
+            int axis = direcIndices[i];
+            constraints[v_idx].push_back(constraintDirecs[axis]);
+            num_total++;
+        }
+    }
+    return success;
+}
 
-    constraints[v_idx].push_back(i0);
-    constraints[v_idx].push_back(i1);
-    constraints[v_idx].push_back(i2);
+void resetConstraintVector(bool resetPC) {
+    // Clear Constraints
+    for (int i = 0; i < constraints.size(); i++) {
+        constraints[i].clear();
+    }
+    if (resetPC) {
+        // Clear point cloud
+        psConstraints.clear();
+        VtoConstraint.clear();
+        std::cout << "Cleared all constraints." << std::endl;
+        psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+    }
+    return;
+}
+
+// For the direct solver, test whether there is at least three constrained vertices
+// If so, constrain in all direcs and return true
+bool testDirectSolverConstraints() {
+    std::vector<int> fullyConstrain;
+    // Get a list of which vertices are constrained
+    for (int v = 0; v < constraints.size(); v++) {
+        if (constraints[v].size() != 0) {
+            fullyConstrain.push_back(v);
+        }
+    }
+    // Terminate here, if not enough constrained
+    if (fullyConstrain.size() < 3) {
+        return false;
+    }
+    // Apply rigid constraint to all directions for constrained vertices
+    resetConstraintVector(false);
+    std::vector<int> allDirecs = {0, 1, 2};
+    for (int v = 0; v < fullyConstrain.size(); v++) {
+        addConstraintToVector(fullyConstrain[v], allDirecs);
+    }
+    return true;
+}
+
+// Modify a vertex position in polyscope
+void modifyVertexPositions(int vert_idx, glm::vec3 new_pos) {
+    psV[vert_idx] = new_pos;
+    V_current[vert_idx] = IO::glmToEigen(new_pos);
+    return;
+}
+
+// Reset all vertex positions in Polyscope, as well as the constraints
+void resetVertexPositions() {
+    // Reset Mesh
+    IO::polyscopeTetConverter(V, T, psV, psT);
+    IO::loadTOBJ(InputPath, V_current, T_current, false);
+    psMesh = polyscope::registerTetMesh("Simulation Mesh", psV, psT);
+    // Reset constraint PC
+    for (const auto& pair : VtoConstraint) {
+        psConstraints[pair.second] = psV[pair.first];
+    }
+    psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+
+    //resetConstraintVector(true);
     return;
 }
 
@@ -223,11 +436,14 @@ void addConstraintToVector(int v_idx) {    // Need to generalize this to all dim
 // https://github.com/ocornut/imgui/blob/master/imgui.h
 void myCallback() {
     ImGuiIO& io = ImGui::GetIO();
+    float totalWidth = ImGui::GetContentRegionAvail().x;
+    float spacing = ImGui::GetStyle().ItemSpacing.x;
+    float itemWidthThird1 = (totalWidth - spacing) * 0.3f;
+    float itemWidthThird2 = (totalWidth - spacing) * 0.27f;
     
     bool mouseDown = ImGui::IsMouseDown(0);
     bool mouseClicked = ImGui::IsMouseClicked(0);
     bool mouseReleased = ImGui::IsMouseReleased(0);
-    int selectedVertex = -1;
     glm::vec2 screen{io.MousePos.x, io.MousePos.y};
 
     polyscope::PickResult pick = polyscope::pickAtScreenCoords(screen);
@@ -240,6 +456,22 @@ void myCallback() {
             constraintMode = false;
             scrubMode = false;
             autoPlaying = false;
+            gizmoMode = false;
+            endVertexEdit();
+
+            // If using direct solver, we need to make sure there is at least one constraint
+            if (sIdx == 0) {
+                bool success = testDirectSolverConstraints();
+                if (!success) {
+                    std::cout << "Direct Solver failed. At least three constrained vertex must be specified to produce a non-singular system." << std::endl;
+                    return;
+                }
+                // Direct solve has no time steps, so just compute 1 frame
+                playbackStartIdx = 0;
+                playbackEndIdx = 1;
+                seconds = 1;
+                fps = 1;
+            } 
             solveDeformation();
         }
     }
@@ -308,36 +540,63 @@ void myCallback() {
         playback(framePath);
     }
 
+    if (ImGui::Button(gizmoMode ? "Stop Moving Vertex" : "Move Vertex")) {
+        if (loadingMode) {
+            std::cout << "Currently in loading mode. Run without flags to solve for a deformation." << std::endl;
+        } else if (autoPlaying) {
+            std::cout << "Currently in Autoplaying mode. Stop Playback to move vertices." << std::endl;
+        } else if (constraintMode) {
+            std::cout << "Currently in Constraint mode. Stop applying constraints to move vertices." << std::endl;
+        }
+        else {
+            gizmoMode = !gizmoMode;
+            selectedVertex = -1;
+            endVertexEdit();
+            if (gizmoMode) {
+                std::cout << "Hiding Constraints during editing." << std::endl;
+                showPC = false;
+                psConstraintPC->setEnabled(showPC);
+            } else {
+                std::cout << "Unhiding Constraints." << std::endl;
+                showPC = true;
+                psConstraintPC->setEnabled(showPC);
+            }
+        }
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Vertices")) {
+        if (loadingMode) {
+            std::cout << "Currently in loading mode. Run without flags to solve for a deformation." << std::endl;
+        } else if (autoPlaying) {
+            std::cout << "Currently in Autoplaying mode. Stop Playback to reset vertices." << std::endl;
+        } else if (constraintMode) {
+            std::cout << "Currently in Constraint mode. Stop applying constraints to reset vertices." << std::endl;
+        }
+        std::cout << "Resetting vertex locations. Note that constraints will NOT be reset." << std::endl;
+        resetVertexPositions();
+        gizmoMode = false;
+        showPC = true;
+        psConstraintPC->setEnabled(showPC);
+    }
+
 
     if (ImGui::Button(constraintMode ? "Stop Applying Constraints" : "Apply Constraint")) {
         if (loadingMode) {
             std::cout << "Currently in loading mode. Run without flags to solve for a deformation." << std::endl;
         } else if (autoPlaying) {
             std::cout << "Currently in Autoplaying mode. Stop Playback to add constraints." << std::endl;
+        } else if (gizmoMode) {
+            std::cout << "Currently in Vertex Moving mode. Stop this mode to add constraints." << std::endl;
+            std::cout << "NOTE: It is recommended that you move vertices before applying constraints." << std::endl;
         } else {
             constraintMode = !constraintMode;
-        }
-    }
-    
-    // Check if selected a mesh vertex
-    if (constraintMode && mouseClicked && pick.isHit && pick.structure == psMesh) {
-        polyscope::VolumeMeshPickResult meshPick = psMesh->interpretPickResult(pick);
-
-        if (meshPick.elementType == polyscope::VolumeMeshElement::VERTEX) {
-            selectedVertex = static_cast<int>(meshPick.index);
-            // Add to constraint vector
-            addConstraintToVector(selectedVertex);
-            std::cout << "Added Vertex " << selectedVertex << " to constraint set." << std::endl;
-            // Create point and add to point cloud
-            Eigen::Vector3d v_xyz = m->v[selectedVertex];
-            glm::vec3 temp_pnt;
-            psConstraints.emplace_back(static_cast<float>(v_xyz(0)),
-                                       static_cast<float>(v_xyz(1)),
-                                       static_cast<float>(v_xyz(2)));
-            psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
-            psConstraintPC->setPointRadius(0.008);
-        } else {
-            std::cout << "Did not click on handle." << std::endl;
+            if (constraintMode) {
+                std::cout << "Note: Use Axis checkboxes to select which axes to constrain." << std::endl;
+            }
+            selectedVertex = -1;
+            showPC = true;
+            psConstraintPC->setEnabled(showPC);
         }
     }
 
@@ -345,27 +604,133 @@ void myCallback() {
     // Reset the constraint set
     if (ImGui::Button("Reset Constraints")) {
         constraintMode = false;
-        // Clear constraint vector
-        for (int i = 0; i < constraints.size(); i++) {
-            constraints[i].clear();
-        }
-        // Clear point cloud
-        psConstraints.clear();
-        std::cout << "Cleared all constraints." << std::endl;
-        psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+        resetConstraintVector(true);
     }
 
+    // Which axes to constrain
+    ImGui::Text("Constrain Axes:");
+    ImGui::SameLine();
+    ImGui::Checkbox("X", &xAxis);
+    ImGui::SameLine();
+    ImGui::Checkbox("Y", &yAxis);
+    ImGui::SameLine();
+    ImGui::Checkbox("Z", &zAxis);
+    ImGui::SameLine();
+    ImGui::Checkbox("Custom", &customConstraint);
+
+    if (customConstraint) { // Custom constraint should exist on its own
+        xAxis = false;
+        yAxis = false;
+        zAxis = false;
+    }
+    ImGui::PushItemWidth(itemWidthThird1);
+    ImGui::SliderFloat("x", &Cx, -1.0, 1.0, "%.2f");
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(itemWidthThird1);
+    ImGui::SliderFloat("y", &Cy, -1.0, 1.0, "%.2f");
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(itemWidthThird1);
+    ImGui::SliderFloat("z", &Cz, -1.0, 1.0, "%.2f");
+    ImGui::PopItemWidth();
+
+
+    // Gizmo Mode activation
+    if (gizmoMode) {
+        // Gizmo moved
+        if (activeGizmo) {
+            glm::vec3 newPos = vertexGizmo->getPosition();
+            modifyVertexPositions(selectedVertex, newPos);
+            psMesh->updateVertexPositions(psV);
+
+            // Also update constraint vert if is constrained
+            auto it = VtoConstraint.find(selectedVertex);
+            if (it != VtoConstraint.end()) {
+                psConstraints[it->second] = newPos;
+                psConstraintPC->updatePointPositions(psConstraints);
+            }
+        }
+        // New vertex selected
+        if (mouseClicked && pick.isHit && pick.structure == psMesh) {
+            polyscope::VolumeMeshPickResult meshPick = psMesh->interpretPickResult(pick);
+
+            if (meshPick.elementType == polyscope::VolumeMeshElement::VERTEX) {
+                int tempSelectedVertex = static_cast<int>(meshPick.index);
+                // If we are switching to a different vertex, then remove the current gizmo and create a new one
+                if ((tempSelectedVertex != selectedVertex)) {
+                    endVertexEdit();
+                    selectedVertex = tempSelectedVertex;
+                    std::cout << "Moving Vertex " << selectedVertex << std::endl;
+                    beginVertexEdit(selectedVertex);
+                }
+            } else if (io.WantCaptureMouse || ImGui::IsAnyItemActive() || ImGui::IsMouseDragging(0)) {
+                // If user is dragging gizmo (or any UI item is active), do NOT dismiss
+                return; // skip click-away logic this frame
+            } else {
+                std::cout << "Did not click on handle or gizmo." << std::endl;
+                selectedVertex = -1;
+                endVertexEdit();    // Remove gizmo
+            }
+        }
+    }
+
+    // Constraint mode activation
+    if (constraintMode && mouseClicked && pick.isHit && pick.structure == psMesh) {
+        polyscope::VolumeMeshPickResult meshPick = psMesh->interpretPickResult(pick);
+
+        if (meshPick.elementType == polyscope::VolumeMeshElement::VERTEX) {
+            selectedVertex = static_cast<int>(meshPick.index);
+            // Construct the constraint indices
+            std::vector<int> constraintIndices;
+            if (xAxis) {
+                constraintIndices.push_back(0);
+            } if (yAxis) {
+                constraintIndices.push_back(1);
+            } if (zAxis) {
+                constraintIndices.push_back(2);
+            }
+            // Add to constraint vector
+            bool success = addConstraintToVector(selectedVertex, constraintIndices);
+            if (success) {
+                std::cout << "Added Vertex " << selectedVertex << " to constraint set." << std::endl;
+                // Create point and add to point cloud
+                glm::vec3 v_xyz = psV[selectedVertex];
+                psConstraints.emplace_back(v_xyz);
+                psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+                psConstraintPC->setPointRadius(0.008);
+
+                VtoConstraint[selectedVertex] = psConstraints.size()-1;
+            } else {
+                std::cout << "Constraint was not added successfully. Directions may already be constrained." << std::endl;
+            }
+        } else {
+            std::cout << "Did not click on handle." << std::endl;
+        }
+    }
+
+
     // Simulation Time
-    ImGui::SliderInt("Simulation Time (s)", &seconds, 1, 30);
+    ImGui::SliderInt("Simulation Time (s)", &seconds, 1, 120);
     if (ImGui::SliderInt("Steps Per Second", &fps, 1, 100) && !autoPlaying) {   // We can only scrub when not autoplaying
         spf = 1.0/fps;
     }
     ImGui::Text("Timestep = %.3e", spf);
 
     // Simulator
-    ImGui::RadioButton("BDF-1", &sIdx, 0);
+    ImGui::RadioButton("Direct", &sIdx, 0);
     ImGui::SameLine();
-    ImGui::RadioButton("BDF-2", &sIdx, 1);
+    ImGui::RadioButton("BDF-1", &sIdx, 1);
+    ImGui::SameLine();
+    ImGui::RadioButton("BDF-2", &sIdx, 2);
+
+    // If clicked Direct Solver, let's just go ahead and nix the other forces
+    if (sIdx == 0) {
+        R = false;
+        G = false;
+        seconds = 1;
+        fps = 1;
+    }
 
     // Energies
     ImGui::RadioButton("SNH", &eIdx, 0);
@@ -373,8 +738,8 @@ void myCallback() {
     ImGui::RadioButton("ARAP", &eIdx, 1);
 
     // Material Parameters
-    ImGui::SliderFloat("Poisson's Ratio", &PR, 0., 0.5, "%.2f");
-    if (ImGui::SliderFloat("Young's Modulus (log10)", &logE, 4.0f, 6.0f, "%.2f")) {
+    ImGui::SliderFloat("Poisson's Ratio", &PR, 0., 0.499, "%.3f");
+    if (ImGui::SliderFloat("Young's Mod. (log10)", &logE, 4.0f, 6.0f, "%.2f")) {
         YM = std::pow(10.0, logE);
     }
     ImGui::Text("E = %.3e", YM);
@@ -384,9 +749,17 @@ void myCallback() {
     ImGui::SameLine();
     ImGui::Checkbox("External Force", &G);
 
-    ImGui::SliderFloat("Ext. Force (x)", &Gx, -10.0, 10.0);
-    ImGui::SliderFloat("Ext. Force (y)", &Gy, -10.0, 10.0);
-    ImGui::SliderFloat("Ext. Force (z)", &Gz, -10.0, 10.0);
+    ImGui::PushItemWidth(itemWidthThird2);
+    ImGui::SliderFloat("F(x)", &Gx, -10.0, 10.0, "%.2f");
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(itemWidthThird2);
+    ImGui::SliderFloat("F(y)", &Gy, -10.0, 10.0, "%.2f");
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(itemWidthThird2);
+    ImGui::SliderFloat("F(z)", &Gz, -10.0, 10.0, "%.2f");
+    ImGui::PopItemWidth();
 }
 
 int main(int argc, char **argv) {
@@ -429,17 +802,14 @@ int main(int argc, char **argv) {
     polyscope::view::setProjectionMode(polyscope::ProjectionMode::Orthographic);
 
     // Load our tet mesh object
-    std::vector<Eigen::Vector3d> V;
-    std::vector<std::vector<int>> T;
     std::cout << "\nLoading TOBJ file" << std::endl;
     IO::loadTOBJ(InputPath, V, T, false);
+    IO::loadTOBJ(InputPath, V_current, T_current, false);
     std::cout << "Loading TOBJ data to internal tetmesh object" << std::endl;
     m = std::make_unique<Geom::tetmesh>(V, T);
     // Initialize constraints
     constraints.resize(m->n);
 
-    std::vector<glm::vec3> psV;
-    std::vector<std::array<size_t, 4>> psT;
     std::cout << "\nConverting to Polyscope TetMesh" << std::endl;
     IO::polyscopeTetConverter(V, T, psV, psT);
 
@@ -449,6 +819,7 @@ int main(int argc, char **argv) {
 
     // Empty point cloud for constraints
     psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+    psConstraintPC->setEnabled(showPC);
 
     std::cout << "\nTotal Vertex Count: " << m->n << std::endl;
     std::cout << "Total Tet Count: " << m->num_t << "\n" << std::endl;

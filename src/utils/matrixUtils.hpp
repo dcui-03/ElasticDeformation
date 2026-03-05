@@ -13,6 +13,11 @@ double solveMu(double E, double V);
 
 double solveLambda(double E, double V);
 
+// Converts a 3n x 1 vector to an nx3 vector
+Eigen::MatrixXd foldVector3d(Eigen::VectorXd& p);
+
+double computeTetVolume(std::vector<Utils::Vector3d> tet_verts);
+
 // Cross product matrix (little hat)
 Utils::Matrix3d crossProdMatrix(Utils::Vector3d x);
 

@@ -17,25 +17,34 @@
 namespace Solver {
 
 // Constructor
-integrator::integrator(Geom::mesh& m, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext):
+integrator::integrator(Geom::mesh& m, Geom::mesh& m_start, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext):
         _m(m), _e(e), h(t), Rayleigh(R), constraints(c) {
-    initializePV();
+    initializePV(m_start);
     initializeDamping();
     initializeMass();
     initializeExtForce(a_ext);
     assemblePrefiltering();
 };
 
+// Constructor for Solves without timestepping or Rayleigh Damping
+integrator::integrator(Geom::mesh& m, Geom::mesh& m_start, energy::Energy& e, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext):
+        _m(m), _e(e), constraints(c) {
+    initializePV(m_start);
+    initializeMass();
+    initializeExtForce(a_ext);
+    assemblePrefiltering();
+};
+
 // Set initial velocities to 0 and positions to the original
-void integrator::initializePV() {
+void integrator::initializePV(Geom::mesh& m_start) {
     positions_t.resize(_m.dim * _m.n);
     velocities_t.resize(_m.dim * _m.n);
 
     for (int v = 0; v < _m.n; v++) {    // Initialize current position to original
         //std::cout << "Vertex " << v << ": " << _m.v[v](0) << ", " << _m.v[v](1) << ", " << _m.v[v](2) << std::endl;
-        positions_t(_m.dim*v) = _m.v[v](0);
-        positions_t(_m.dim*v+1) = _m.v[v](1);
-        positions_t(_m.dim*v+2) = _m.v[v](2);
+        positions_t(_m.dim*v) = m_start.v[v](0);
+        positions_t(_m.dim*v+1) = m_start.v[v](1);
+        positions_t(_m.dim*v+2) = m_start.v[v](2);
     }
     velocities_t.setZero();   // Set initial velocities to 0
     return;
@@ -133,8 +142,40 @@ void integrator::assemblePrefiltering() {
     return;
 }
 
+// Line search using a starting alpha 
+// returns -1.0 when an error has occurred.
+double integrator::LineSearch(double start_alpha) {
+    double min_alpha = 0.001;
+    bool inversion = true;
+    double alpha = start_alpha;
+
+    Eigen::VectorXd dx;
+    double residual;
+    do {
+        residual = TimeStep(dx);
+
+        // Check for inversion
+        if (residual == -2.0) {
+            alpha = alpha/2.0;
+            std::cout << "    - Step size resulted in inverted elements. Reducing step size by half: " << alpha << std::endl;
+        }
+
+        // Reduce alpha
+        if (alpha <= min_alpha && inversion) {
+            std::cout << "    - Step size reduced to minimum (<=" << min_alpha << ") without convergence. Terminating." << std::endl;
+            break;
+            return -1.0;
+        }
+    } while(inversion);
+    // Completed one iteration, so we can add to positions
+    if (!inversion) {
+        return residual;
+    }
+    return -1.0;
+}
+
 // Main timestepping function
-int integrator::TimeStep() {
+double integrator::TimeStep(Eigen::VectorXd& dv) {
     Eigen::SparseMatrix<double> _A;
     Eigen::VectorXd _b;
     Eigen::VectorXd _z;
@@ -147,15 +188,16 @@ int integrator::TimeStep() {
     Eigen::VectorXd _y = solver.solve(_b);
 
     // Update velocities using the constraints
-    velocities_t += (_y + _z);
+    dv = _y + _z;
+    velocities_t += dv;
     // Update positions
     positions_t += h*velocities_t;
 
     // If we have a bad value, terminate the simulator
     if (!velocities_t.allFinite() || !positions_t.allFinite()) {
-        return 0;
+        return 0.0;
     }
-    return 1;
+    return 1.0;
 }
 
 // Assemble per-iteration z value
@@ -181,6 +223,26 @@ void integrator::assembleZ(Eigen::VectorXd& z) {
     }
     //z = IminusS * z;
     return;
+}
+
+// Check if a tet is inverted. If so, add it to a list
+std::vector<int> integrator::checkElementInversion() {
+    double threshold = 1e-2;
+    Eigen::MatrixXd folded_pos = Utils::foldVector3d(positions_t);
+    std::vector<int> inverted_tets;
+    for (int e = 0; e < _m.num_t; e++) {
+        std::vector<Utils::Vector3d> tet_pos;
+        tet_pos.push_back(folded_pos.row(_m.t[e][0]));
+        tet_pos.push_back(folded_pos.row(_m.t[e][1]));
+        tet_pos.push_back(folded_pos.row(_m.t[e][2]));
+        tet_pos.push_back(folded_pos.row(_m.t[e][3]));
+
+        double volume = Utils::computeTetVolume(tet_pos);
+        if (volume < threshold) {
+            inverted_tets.push_back(e);
+        }
+    }
+    return inverted_tets;
 }
 
 // Compute elastic force for an element (minus mass)
@@ -218,7 +280,7 @@ void integrator::preFilteringb(const Eigen::SparseMatrix<double>& A, const Eigen
 
 // Assemble system
 // Note we're doing this and returning just the matrices so that I'm not hogging extra memory during the system solve
-void integrator::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
+double integrator::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global) {
     Eigen::SparseMatrix<double> K(_m.dim*_m.n, _m.dim*_m.n);  // Stiffness Matrix
     Eigen::SparseMatrix<double> C(_m.dim*_m.n, _m.dim*_m.n);  // Damping Matrix
     std::vector<T> tripletK;
@@ -252,7 +314,7 @@ void integrator::buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::Vecto
     assembleZ(z_global);
     preFilteringb(A, b, z_global, b_global);
 
-    return;
+    return 1.0;
 }
 
 }   // namespace Solver

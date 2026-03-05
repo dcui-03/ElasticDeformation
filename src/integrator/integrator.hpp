@@ -17,17 +17,23 @@ class integrator {
     public:
         typedef Eigen::Triplet<double> T;
 
-        integrator(Geom::mesh& m, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext);
+        integrator(Geom::mesh& m, Geom::mesh& m_start, energy::Energy& e, double t, bool R, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext);
 
+        integrator(Geom::mesh& m, Geom::mesh& m_start, energy::Energy& e, std::vector<std::vector<Utils::Vector3d>>& c, Utils::Vector3d& a_ext);
+
+        // Line search that calls TimeStep as necessary
+        virtual double LineSearch(double start_alpha);
         // Main function for timestepping procedure
-        virtual int TimeStep();
-
+        // dv outputs the change in whatever quantity we solve for (ex. change in velocity)
+        virtual double TimeStep(Eigen::VectorXd& dv);
+        // Check which elements are inverted if any (TODO: This function is buggy, use determinant of F instead)
+        virtual std::vector<int> checkElementInversion();
         // Current State
         Eigen::VectorXd positions_t;
         Eigen::VectorXd velocities_t;
     protected:
         // Function for initializing and pre-computing
-        virtual void initializePV();
+        virtual void initializePV(Geom::mesh& m_start);
 
         virtual void initializeDamping();
 
@@ -56,7 +62,8 @@ class integrator {
         virtual Eigen::VectorXd assembleRHS(Eigen::VectorXd& f_elast, Eigen::VectorXd& f_damp, Eigen::VectorXd& f_ext, Eigen::SparseMatrix<double>& K);
 
         // Assemble all system parts
-        virtual void buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global);
+        // Returns 1.0 on success, -1.0 on failure
+        virtual double buildSystem(Eigen::SparseMatrix<double>& A_global, Eigen::VectorXd& b_global, Eigen::VectorXd& z_global);
 
 
         // VARIABLES

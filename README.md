@@ -1,13 +1,15 @@
-# 524FinalProject: Dynamic Deformables
+# Nonlinear Elastic Deformation With Dynamic Deformables
 
 https://github.com/user-attachments/assets/0b72c7e1-f630-4530-8afb-82ff3ead77ce
 
-*NOTE: This is a work-in-progress that I am hoping to add to in the future!*
-
-This repository contains my implementation of the isotropic volumetric deformation portion of Dynamic Deformables by Theodore Kim and David Eberle (2022) as my final project for CPSC524: Geometric Modeling. It specifically implements the BDF-1 integration scheme for tetrahedral meshes, with support for Rayleigh Damping and external forces. The elastic energies implemented thus far are As-Rigid-As-Possible (ARAP) and Stable Neo-Hookean (SNH). Because there is a reference implementation (HOBAK), I admit that took heavy inspiration from HOBAK's organizational structure. However, almost all of the code is self written. See the **Academic Honesty** section below for more details on this. Links to the references used are below:
+This repository contains my implementation and extensions of the isotropic volumetric deformation portion of Dynamic Deformables by Theodore Kim and David Eberle (2022) as my final project for UBC CPSC524: Geometric Modeling. It mainly implements the BDF-1 and BDF-2 integration scheme for tetrahedral meshes, with support for Rayleigh Damping and external forces. The elastic energies implemented thus far are As-Rigid-As-Possible (ARAP) and Stable Neo-Hookean (SNH). Because there is a reference implementation (HOBAK), I admit that took heavy inspiration from HOBAK's organizational structure. However, almost all of the code is self written. See the **Academic Honesty** section below for more details on this. Links to the references used are below:
 
 - Dynamic Deformables: https://www.tkim.graphics/DYNAMIC_DEFORMABLES/
 - HOBAK: https://github.com/theodorekim/HOBAKv1
+
+Moving beyond Dynamic Deformables' foundation, I have also added support for quasi-static deformation (code needs some cleaning) via Newton iterations with line search. Note this is not very robust yet as I'm still fiddling with it. Lastly, I added support for abs-style projection when the Poisson's Ratio is close to 0.5 to stabilize the system, as recommended by the following paper:
+
+- *Stabler Neo-Hookean Simulation: Absolute Eigenvalue Filtering for Projected Newton* by Chen et al. (2022) (https://www.cs.columbia.edu/cg/abs-psd/)
 
 # Implementation Notes
 This project was built primarily using Eigen [Guennebaud, 2013] for matrix computation and Polyscope [Sharp, 2019] for interactive visualization.
@@ -45,11 +47,11 @@ To run the project, you will need a path to a TOBJ file (see Data folder or HOBA
 ./deformation_app <path_to_input_tobj> <generic_output_path>
 ```
 
-This will launch a Polyscope window with your input tet mesh. There are several GUI buttons which allow you to control simulation parameters, such as the integration scheme (BDF-1 or BDF-2), the Elastic Energy being used (SNH or ARAP), as well as the simulation timespan (in frames and frames per second) and material parameters (Young's Modulus and Poisson's Ratio). You may also use this to toggle Rayleigh Damping and an External Force direction.
+This will launch a Polyscope window with your input tet mesh. There are several GUI buttons which allow you to control simulation parameters, such as the integration scheme (Quasi-static, BDF-1, or BDF-2), the Elastic Energy being used (SNH or ARAP), as well as the simulation timespan (in frames and frames per second) and material parameters (Young's Modulus and Poisson's Ratio). You may also use this to toggle Rayleigh Damping and an External Force direction.
 
-Another button is called *Apply Constraint*. Click the button to activate Constraint Mode, then select the vertices you wish to constrain. After that, click the button again to exit Constraint Mode, or press *Reset Constraints* to clear all of the currently selected constraints. Currently, applying a constraint will fully constrain the position of the selected vertex in all directions.
+You can also apply constraints at vertices using the *Apply Constraints* option in conjunction with the specified axes, as well as move vertices around using a Polyscope gizmo by pressing *Move Vertex*.
 
-When you are ready to simulate, press *Compute Deformation*. This will compute the deformation sequence for the specified parameters. The simulator will dump the output deformation sequence to the specified output path.
+When you are ready to simulate, press *Compute Deformation*. If doing time integration, this will compute the deformation sequence for the specified parameters. The quasistatic deformation treats the result as a single frame (may change this in the future). The simulator will dump the output deformation sequence to the specified output path.
 
 At this point, you may press *Playback* to visualize the animation. If desired, you can pause the playback to change the frame rate using the *Steps Per Second* slider. You may instead choose to toggle the slider by pressing *Scrubbing*, which allows you to load per frame data as desired.
 
@@ -75,13 +77,9 @@ This will again open the Polyscope window, but you will be locked to Playback Mo
 - 3D thin shells
 - Load tet meshes using libigl::tetgen
 - Direction-independent application of constraints
-- Find a better file saving/loading format...
+- Static Deformer (ex. via Laplacian) for posing
 
 # Academic Honesty
-Any functions taken or heavily inspired by an external (non-AI) source is explicitly labeled as such with comments. These are primarily from HOBAK itself, with the functions in question being in /src/utils/MatrixUtils:
-- computedFdx(): Copied from Dynamic Deformables [Kim & Eberle, 2022] (MATLAB code)
-- partialJpartialF(): Directly copied from HOBAK
-- buildTwistAndFlipEigenvectors(): Heavily inspired by HOBAK
-- buildScalingEigenvectors(): Heavily inspired by HOBAK
+Any functions taken or heavily inspired by an external (non-AI) source is explicitly labeled as such with comments. These are primarily from HOBAK itself and are labeled as such in the code. Much thanks to the authors of Dynamic Deformables for their clear explanations and helpful code bits.
 
 Additionally, all functions for reading and writing files in /src/utils/IOutils are written largely by AI. All other code was written by me :)

@@ -22,8 +22,8 @@ This project was built primarily using Eigen [Guennebaud, 2013] for matrix compu
 
 Begin by cloning the repository:
 ```
-git clone --recurse-submodules git@github.com:dcui-03/524FinalProject.git
-cd ./524FinalProject
+git clone --recurse-submodules git@github.com:dcui-03/ElasticDeformation.git
+cd ./ElasticDeformation
 ```
 Create a deps folder and clone Polyscope and libigl:
 ```

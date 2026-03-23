@@ -9,7 +9,7 @@
 
 namespace energy {
 
-Energy::Energy(double _mu, double _lambda): mu(_mu), lambda(_lambda) {
+Energy::Energy(double _mu, double _lambda, bool abs): mu(_mu), lambda(_lambda), use_abs(abs) {
 }
 
 Energy::~Energy() = default;
@@ -59,7 +59,7 @@ Utils::Matrix9d Energy::computeHessian(Utils::Matrix3d& F) {
 }
 
 // COMPUTE CLAMPED ENERGY HESSIAN (For PSD)
-Utils::Matrix9d Energy::computeClampedHessian(Utils::Matrix3d& F) {
+Utils::Matrix9d Energy::computePSDHessian(Utils::Matrix3d& F) {
     Utils::Vector9d eigenvals;
     Utils::Matrix9d eigenvecs;
 
@@ -111,9 +111,13 @@ Utils::Matrix9d Energy::computeClampedHessian(Utils::Matrix3d& F) {
     // Get scaling eigenvectors
     Utils::buildScalingEigenvectors(U, eigensys.eigenvectors(), V, eigenvecs);
 
-    // Zero out the bad eigenvalues
+    // Zero out or absolute value the bad eigenvalues
     for (int i = 0; i < eigenvals.size(); i++) {
-        eigenvals(i) = std::max(eigenvals(i), 0.0);
+        if (use_abs) {
+            eigenvals(i) = std::abs(eigenvals(i));
+        } else {
+            eigenvals(i) = std::max(eigenvals(i), 0.0);
+        }
     }
 
     return (eigenvecs * eigenvals.asDiagonal() * eigenvecs.transpose());

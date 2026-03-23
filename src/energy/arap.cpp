@@ -31,8 +31,8 @@ Utils::Matrix9d ARAP::computeHessian(Utils::Matrix3d& F) {
     return 2*mu*(I - H1);
 }
 
-// Compute Clamped Hessian of the Energy 
-Utils::Matrix9d ARAP::computeClampedHessian(Utils::Matrix3d& F) {
+// Compute Clamped/Abs Hessian of the Energy 
+Utils::Matrix9d ARAP::computePSDHessian(Utils::Matrix3d& F) {
     Utils::Vector9d eigenvals;
     Utils::Matrix9d eigenvecs;
 
@@ -61,7 +61,11 @@ Utils::Matrix9d ARAP::computeClampedHessian(Utils::Matrix3d& F) {
 
     // Zero out the bad eigenvalues
     for (int i = 0; i < eigenvals.size(); i++) {
-        eigenvals(i) = std::max(eigenvals(i), 0.0);
+        if (use_abs) {
+            eigenvals(i) = std::abs(eigenvals(i));
+        } else {
+            eigenvals(i) = std::max(eigenvals(i), 0.0);
+        }
     }
 
     return (eigenvecs * eigenvals.asDiagonal() * eigenvecs.transpose());

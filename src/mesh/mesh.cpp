@@ -1,8 +1,11 @@
 #include "mesh.hpp"
 
 #include "utils/EigenTypes.hpp"
+#include "polyscope/polyscope.h"
+#include "glm/vec3.hpp"
 #include <Eigen/Dense>
 #include <iostream>
+#include <array>
 #include <vector>
 
 namespace Geom {

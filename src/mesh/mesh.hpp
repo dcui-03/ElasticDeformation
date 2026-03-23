@@ -1,8 +1,11 @@
 // mesh.hpp
 #pragma once
 
+#include "polyscope/polyscope.h"
+#include "glm/vec3.hpp"
 #include "utils/EigenTypes.hpp"
 #include <Eigen/Core>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -11,6 +14,7 @@ namespace Geom {
 class mesh {
     public:
         mesh(std::vector<Eigen::Vector3d>& verts, std::vector<std::vector<int>>& connectivity);
+        mesh(std::vector<glm::vec3>& ps_verts, std::vector<std::array<size_t, 4>>& ps_connectivity);
         mesh(std::vector<Eigen::Vector3d>& verts, std::vector<std::vector<int>>& connectivity, double _rho);
 
         std::vector<Eigen::Vector3d>& v;     // ordered list of vertex positions

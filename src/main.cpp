@@ -220,9 +220,9 @@ void solveDeformation() {
 
     Eigen::VectorXd delta;   // Dx or dv
 
-    if (sIdx != 0) {
-        // Iteratively solve each frame
-        std::cout << "====== NOW SOLVING DEFORMATION ======" << std::endl; // Change if using a different solver
+    // Iteratively solve each frame
+    std::cout << "====== NOW SOLVING DEFORMATION ======" << std::endl;
+    if (sIdx != 0) {    // Time integration
         for (int frame = 0; frame < playbackEndIdx; frame++) {
             auto t_start = Clock::now(); // Time starts NOW!
             progress[0]++;  // Update the frame count
@@ -247,7 +247,7 @@ void solveDeformation() {
                 break;
             }
         }
-    } else {
+    } else {    // Quasi-static
         double residual;
         int max_frames = 5e2;
         double min_residual = 1e-5;
@@ -268,16 +268,19 @@ void solveDeformation() {
             std::cout << "    Iteration computation time: " << elapsed.count() << " seconds\n" << std::endl;
             totalTime += elapsed.count();
             num_frames++;
+
+            // save positions and velocities
+            framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f" + std::to_string(num_frames) + ".txt";   // Update the saved file name
+            IO::writeStateToTxt(framePath, timestepper->positions_t, timestepper->velocities_t, m->dim, progress);
+            std::cout << "    Frame saved to <" << framePath << ">" << std::endl;
         } while (residual > min_residual && num_frames < max_frames);
         if (residual <= min_residual) {
-            std::cout << "\nStatic Solver Converged." << std::endl;
+            std::cout << "\nStatic Solver Converged in " << num_frames << " iterations." << std::endl;
         } else if (num_frames >= max_frames) {
-            std::cout << "\nExceeded iteration count. Stopping." << std::endl;
+            std::cout << "\nExceeded iteration count (" << max_frames << "). Stopping." << std::endl;
         }
-        framePath = PlaybackPath.substr(0, PlaybackPath.size()-4) + "_f1.txt";   // Update the saved file name
-        // save positions and velocities
-        IO::writeStateToTxt(framePath, timestepper->positions_t, timestepper->velocities_t, m->dim, progress);
-        std::cout << "    Frame saved to <" << framePath << ">" << std::endl;
+        // Change UI parameter so we can scrub all frames
+        playbackEndIdx = std::min(num_frames, max_frames);
     }
 
     std::cout << "\n====== ALL FRAMES COMPUTED ======" << std::endl;
@@ -463,7 +466,7 @@ void myCallback() {
             if (sIdx == 0) {
                 bool success = testDirectSolverConstraints();
                 if (!success) {
-                    std::cout << "Direct Solver failed. At least three constrained vertex must be specified to produce a non-singular system." << std::endl;
+                    std::cout << "Direct Solver failed. At least three constrained vertices must be specified to produce a non-singular system." << std::endl;
                     return;
                 }
                 // Direct solve has no time steps, so just compute 1 frame
@@ -728,8 +731,6 @@ void myCallback() {
     if (sIdx == 0) {
         R = false;
         G = false;
-        seconds = 1;
-        fps = 1;
     }
 
     // Energies

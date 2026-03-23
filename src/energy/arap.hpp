@@ -20,8 +20,8 @@ class ARAP : public Energy {
 
         // Compute Energy Hessian
         Utils::Matrix9d computeHessian(Utils::Matrix3d& F) override;
-        // Compute Clamped Hessian of the Energy 
-        Utils::Matrix9d computeClampedHessian(Utils::Matrix3d& F) override;
+        // Compute Clamped/Abs Hessian of the Energy 
+        Utils::Matrix9d computePSDHessian(Utils::Matrix3d& F) override;
     protected:
 
         // Compute energy derivatives of the invariants

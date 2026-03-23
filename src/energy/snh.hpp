@@ -10,7 +10,7 @@ namespace energy {
 
 class SNH : public Energy {
     public:
-        SNH(double _mu, double _lambda);
+        SNH(double _mu, double _lambda, bool abs);
 
         // Compute energy itself
         double computeEnergy(Utils::Matrix3d& F) override;
@@ -19,8 +19,8 @@ class SNH : public Energy {
 
         // Compute Energy Hessian
         Utils::Matrix9d computeHessian(Utils::Matrix3d& F) override;
-        // Compute Clamped Hessian of the Energy 
-        Utils::Matrix9d computeClampedHessian(Utils::Matrix3d& F) override;
+        // Compute Clamped/Abs Hessian of the Energy 
+        Utils::Matrix9d computePSDHessian(Utils::Matrix3d& F) override;
     protected:
 
         // Compute energy derivatives of the invariants

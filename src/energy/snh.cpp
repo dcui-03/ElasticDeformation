@@ -11,7 +11,7 @@
 namespace energy {
 
 // Constructor
-SNH::SNH(double _mu, double _lambda): Energy(_mu, _lambda) {
+SNH::SNH(double _mu, double _lambda, bool abs): Energy(_mu, _lambda, abs) {
     alpha = 1 + (mu/lambda);
 }
 
@@ -41,8 +41,8 @@ Utils::Matrix9d SNH::computeHessian(Utils::Matrix3d& F) {
     return (mu*H2) + lambda*(Utils::vectorizeMatrix(dJdF) * Utils::vectorizeMatrix(dJdF).transpose()) + lambda*(J - alpha)*Hj;
 }
 
-// Compute Clamped Hessian of the Energy 
-Utils::Matrix9d SNH::computeClampedHessian(Utils::Matrix3d& F) {
+// Compute Clamped/Abs Hessian of the Energy 
+Utils::Matrix9d SNH::computePSDHessian(Utils::Matrix3d& F) {
     Utils::Vector9d eigenvals;
     Utils::Matrix9d eigenvecs;
 
@@ -88,9 +88,13 @@ Utils::Matrix9d SNH::computeClampedHessian(Utils::Matrix3d& F) {
     // Get scaling eigenvectors
     Utils::buildScalingEigenvectors(U, eigensys.eigenvectors(), V, eigenvecs);
 
-    // Zero out the bad eigenvalues
+    // Zero out the bad eigenvalues OR absolute value
     for (int i = 0; i < eigenvals.size(); i++) {
-        eigenvals(i) = std::max(eigenvals(i), 0.0);
+        if (use_abs) {
+            eigenvals(i) = std::abs(eigenvals(i));
+        } else {
+            eigenvals(i) = std::max(eigenvals(i), 0.0);
+        }
     }
 
     return (eigenvecs * eigenvals.asDiagonal() * eigenvecs.transpose());

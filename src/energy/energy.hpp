@@ -10,7 +10,7 @@ namespace energy {
 
 class Energy {
     public:
-        Energy(double _mu, double _lambda);
+        Energy(double _mu, double _lambda, bool abs);
         virtual ~Energy();
 
         // Compute First Piola Kirchoff stress tensor
@@ -19,7 +19,7 @@ class Energy {
         // Compute Energy Hessian (generic)
         virtual Utils::Matrix9d computeHessian(Utils::Matrix3d& F);
         // Compute Clamped Hessian (for PSD)
-        virtual Utils::Matrix9d computeClampedHessian(Utils::Matrix3d& F);
+        virtual Utils::Matrix9d computePSDHessian(Utils::Matrix3d& F);
     protected:
         // Compute energy itself
         virtual double computeEnergy(Utils::Matrix3d& F);
@@ -39,6 +39,7 @@ class Energy {
 
         // material parameters
         double mu; double lambda;
+        bool use_abs;
 
     private:
         std::string energy_type = "Dirichlet";

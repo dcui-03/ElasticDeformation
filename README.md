@@ -76,7 +76,6 @@ This will again open the Polyscope window, but you will be locked to Playback Mo
 - 2D triangle meshes
 - 3D thin shells
 - Load tet meshes using libigl::tetgen
-- Direction-independent application of constraints
 - Static Deformer (ex. via Laplacian) for posing
 
 # Academic Honesty

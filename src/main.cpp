@@ -44,7 +44,9 @@ bool loadingMode = false;
 
 // Handles for the tet mesh and point cloud
 std::vector<glm::vec3> psV;
+// Eigen::MatrixXd psV
 std::vector<std::array<size_t, 4>> psT;
+// Eigen::MatrixXi TT
 polyscope::VolumeMesh* psMesh;
 polyscope::PointCloud* psConstraintPC;
 bool showPC;
@@ -74,7 +76,7 @@ int scrubFrame = 0;
 // TETMESH COPY
 std::vector<Eigen::Vector3d> V;
 std::vector<std::vector<int>> T;
-std::vector<Eigen::Vector3d> V_current; // We need this for higher precision
+std::vector<Eigen::Vector3d> V_current;
 std::vector<std::vector<int>> T_current;
 std::unique_ptr<Geom::mesh> m;
 // TODO find a mu and lambda to initialize to
@@ -88,7 +90,7 @@ int fps = 5;
 double spf = 1.0/fps;
 
 // Simulator type
-int sIdx = 1;   // 0 for Static, 1 for BDF-1, 2 for BDF-2
+int sIdx = 2;   // 0 for Static, 1 for BDF-1, 2 for BDF-2
 
 // Energy and Forces
 int eIdx = 0;   // 0 for SNH, 1 for ARAP
@@ -291,6 +293,38 @@ void solveDeformation() {
     return;
 }
 
+// Display the constraint vectors that the user applied to each constrained vertex
+void displayConstraintDirecs() {
+    // Iterate over map and build 3 vector lists
+    std::vector<Eigen::Vector3d> constraints0(psConstraints.size());
+    std::vector<Eigen::Vector3d> constraints1(psConstraints.size());
+    std::vector<Eigen::Vector3d> constraints2(psConstraints.size());
+    for (const auto& cVert : VtoConstraint) {
+        constraints0[VtoConstraint[cVert.first]] = constraints[cVert.first][0];
+        if (constraints[cVert.first].size() >= 2) {
+            constraints1[VtoConstraint[cVert.first]] = constraints[cVert.first][1];
+        } else {
+            constraints1[VtoConstraint[cVert.first]] = Eigen::Vector3d::Zero();
+        }
+        if (constraints[cVert.first].size() >= 3) {
+            constraints2[VtoConstraint[cVert.first]] = constraints[cVert.first][2];
+        } else {
+            constraints2[VtoConstraint[cVert.first]] = Eigen::Vector3d::Zero();
+        }
+    }
+    auto* c0_handle = psConstraintPC->addVectorQuantity("c0", constraints0);
+    c0_handle->setEnabled(true);
+    c0_handle->setVectorLengthScale(0.04);
+    // Also show second and third (filled with 0's)
+    auto* c1_handle = psConstraintPC->addVectorQuantity("c1", constraints1);
+    c1_handle->setEnabled(true);
+    c1_handle->setVectorLengthScale(0.04);
+    auto* c2_handle = psConstraintPC->addVectorQuantity("c2", constraints2);
+    c2_handle->setEnabled(true);
+    c2_handle->setVectorLengthScale(0.04);
+}
+
+// Playback a mesh state by loading a file
 void playback(std::string& framePath) {
     // Note there are playbackEndIdx+1 frames since we include the rest frame
     // read this frame's positions and velocities
@@ -302,9 +336,11 @@ void playback(std::string& framePath) {
         psConstraints[pair.second] = psV[pair.first];
     }
     psConstraintPC = polyscope::registerPointCloud("Constraints", psConstraints);
+    // Update constraint vectors
+    displayConstraintDirecs();
 }
 
-
+// Add a gizmo at the specified vertex idx
 void beginVertexEdit(int vert_idx) {
     glm::vec3 startpos = psV[vert_idx];
 
@@ -322,6 +358,7 @@ void beginVertexEdit(int vert_idx) {
     vertexGizmo->setPosition(startpos);
 }
 
+// Remove gizmo
 void endVertexEdit() {
     if (!activeGizmo) return;
 
@@ -333,46 +370,45 @@ void endVertexEdit() {
     return;
 }
 
-// Add constraints of a vertex to the constraint vector
-// So far, can only lock all dims in the major axis directions
-// TODO Future: Enable locking in arbitrary direction individually (as long as 3 direcs are orthoNORMAL)
-bool addConstraintToVector(int v_idx, std::vector<int> direcIndices) {    // Need to generalize this to all dims.
-    // If our vertex is already fully constrained, ignore.
+// Add specified constraint of a vertex to the constraint vector
+bool addConstraintToVector(int v_idx, Eigen::Vector3d constraint_direc) {    // Need to generalize this to all dims.
+    // If our vertex is already fully constrained, or the constraint direction is essentially 0, ignore.
     if (constraints[v_idx].size() >= 3) {
+        std::cout << "Vertex is already fully constrained. Did not add to constraint list." << std::endl;
+        return false;
+    } else if (constraint_direc.norm() <= 1e-5) {
+        std::cout << "Constraint is essentially 0. Did not add to constraint list." << std::endl;
         return false;
     }
-    bool success = false;
-    std::vector<bool> to_add(direcIndices.size());
-    for (int i = 0; i < to_add.size(); i++) {
-        to_add[i] = true;
-    }
-    // Note: we can only take 3 independent direcs maximum before we hit redundancy
-    // In a full implementation, we need to create actual orthonormal vectors (i.e., check via projection, cull parallel, then normalize what remains)
+    // Normalize in place
+    constraint_direc.normalize();
+    Eigen::Vector3d proj = constraint_direc;
     // Check which vectors are not already represented
-    for (int i = 0; i < direcIndices.size(); i++) {
-        int axis = direcIndices[i];
-        for (int j = 0; j < constraints[v_idx].size(); j++) {
-            if (constraints[v_idx][j] == constraintDirecs[axis]) {
-                to_add[i] = false;
-            }
+    for (int j = 0; j < constraints[v_idx].size(); j++) {
+        // Project out each existing constraint
+        proj -= (constraint_direc.dot(constraints[v_idx][j])) * constraints[v_idx][j];
+        if (proj.norm() == 1e-5) {  // If projection yielded 0, then we have a dependent vector
+            std::cout << "Constraint is linearly dependent on existing constraints. Did not add to constraint list." << std::endl;
+            return false;
         }
     }
+    proj.normalize();
     // Add constraint vectors in, so long as we don't exceed 3
     int num_total = constraints[v_idx].size();
-    for (int i = 0; i < to_add.size(); i++) {
-        if (num_total >= 3) {
-            break;
-        }
-        if (to_add[i] == true) {
-            success = true;
-            int axis = direcIndices[i];
-            constraints[v_idx].push_back(constraintDirecs[axis]);
-            num_total++;
-        }
+    // If we would have 3 constraints and they are all orthogonal, then
+    // just replace with canonical axes for computational simplicity/stability
+    if (num_total == 2) {
+        std::cout << "Constraint added. Vertex " << v_idx << " is now fully constrained." << std::endl;
+        constraints[v_idx][0] = i0;
+        constraints[v_idx][1] = i1;
+        constraints[v_idx].push_back(i2);
+    } else {
+        constraints[v_idx].push_back(proj);
+        std::cout << "Constraint added. Vertex " << v_idx << " now has " << num_total+1 << " constraints." << std::endl;
     }
-    return success;
+    return true;
 }
-
+// Wipe all constraints
 void resetConstraintVector(bool resetPC) {
     // Clear Constraints
     for (int i = 0; i < constraints.size(); i++) {
@@ -388,7 +424,7 @@ void resetConstraintVector(bool resetPC) {
     return;
 }
 
-// For the direct solver, test whether there is at least three constrained vertices
+// For the direct solver, test whether there are at least three constrained vertices
 // If so, constrain in all direcs and return true
 bool testDirectSolverConstraints() {
     std::vector<int> fullyConstrain;
@@ -406,7 +442,9 @@ bool testDirectSolverConstraints() {
     resetConstraintVector(false);
     std::vector<int> allDirecs = {0, 1, 2};
     for (int v = 0; v < fullyConstrain.size(); v++) {
-        addConstraintToVector(fullyConstrain[v], allDirecs);
+        addConstraintToVector(fullyConstrain[v], i0);
+        addConstraintToVector(fullyConstrain[v], i1);
+        addConstraintToVector(fullyConstrain[v], i2);
     }
     return true;
 }
@@ -435,8 +473,6 @@ void resetVertexPositions() {
 }
 
 // A user-defined callback, for creating control panels (etc)
-// Use ImGUI commands to build whatever you want here, see
-// https://github.com/ocornut/imgui/blob/master/imgui.h
 void myCallback() {
     ImGuiIO& io = ImGui::GetIO();
     float totalWidth = ImGui::GetContentRegionAvail().x;
@@ -543,6 +579,33 @@ void myCallback() {
         playback(framePath);
     }
 
+    if (ImGui::Button("Reset All Settings")) {
+        // Turn off all modes first
+        endVertexEdit();
+        gizmoMode = false;
+        scrubMode = false;
+        constraintMode = false;
+        loadingMode = false;
+        // Reset variables
+        PR = 0.35;
+        YM = 5e4;
+        seconds = 10;
+        fps = 5;
+        spf = 1.0/fps;
+        int sIdx = 2;
+        eIdx = 0;
+        R = true;
+        G = true;
+        Gx = 0;
+        Gy = 0;
+        Gz = -9.8;
+        customConstraint = false;
+        Cx = 1.0;
+        Cy = 1.0;
+        Cz = 1.0;
+        std::cout << "All settings reset. NOTE: Constraints and Mesh Vertices are NOT reset." << std::endl;
+    }
+
     if (ImGui::Button(gizmoMode ? "Stop Moving Vertex" : "Move Vertex")) {
         if (loadingMode) {
             std::cout << "Currently in loading mode. Run without flags to solve for a deformation." << std::endl;
@@ -638,7 +701,6 @@ void myCallback() {
     ImGui::SliderFloat("z", &Cz, -1.0, 1.0, "%.2f");
     ImGui::PopItemWidth();
 
-
     // Gizmo Mode activation
     if (gizmoMode) {
         // Gizmo moved
@@ -679,23 +741,58 @@ void myCallback() {
     }
 
     // Constraint mode activation
-    if (constraintMode && mouseClicked && pick.isHit && pick.structure == psMesh) {
-        polyscope::VolumeMeshPickResult meshPick = psMesh->interpretPickResult(pick);
-
-        if (meshPick.elementType == polyscope::VolumeMeshElement::VERTEX) {
-            selectedVertex = static_cast<int>(meshPick.index);
-            // Construct the constraint indices
-            std::vector<int> constraintIndices;
-            if (xAxis) {
-                constraintIndices.push_back(0);
-            } if (yAxis) {
-                constraintIndices.push_back(1);
-            } if (zAxis) {
-                constraintIndices.push_back(2);
+    if (constraintMode && mouseClicked && pick.isHit) {
+        bool hit_object = false;
+        // If we hit a mesh, get the mesh vertex we hit
+        if (pick.structure == psMesh) {
+            polyscope::VolumeMeshPickResult meshPick = psMesh->interpretPickResult(pick);
+            if (meshPick.elementType == polyscope::VolumeMeshElement::VERTEX) {
+                selectedVertex = static_cast<int>(meshPick.index);
+                hit_object = true;
+            } else {
+                std::cout << "Did not click on mesh vertex." << std::endl;
+            }
+        } else if (pick.structure == psConstraintPC) {  // If we hit the point cloud, get the underlying mesh vertex
+            polyscope::PointCloudPickResult pcPick = psConstraintPC->interpretPickResult(pick);
+            selectedVertex = static_cast<int>(pcPick.index);
+            // Figure out which point cloud point we hit
+            // TODO: This is quite slow if we have tons of constraints...
+            for (const auto& cVert : VtoConstraint) {
+                if (cVert.second == selectedVertex) {
+                    selectedVertex = cVert.first;
+                    break;
+                }
+            }
+            hit_object = true;
+        } else {    // If we did not hit either object, quit
+            std::cout << "Did not click on mesh vertex." << std::endl;
+        }
+        // Add constraint if we hit a mesh vertex
+        if (hit_object) {
+            bool success;
+            int num_constraints_before = constraints[selectedVertex].size();
+            // Add the specified constraint(s)
+            if (customConstraint) {
+                Eigen::Vector3d new_constraint = {static_cast<double>(Cx),
+                                                  static_cast<double>(Cy),
+                                                  static_cast<double>(Cz)};
+                success = addConstraintToVector(selectedVertex, new_constraint);
+            } else {
+                bool successX = false;
+                bool successY = false;
+                bool successZ = false;
+                if (xAxis) {
+                    successX = addConstraintToVector(selectedVertex, i0);
+                } if (yAxis) {
+                    successY = addConstraintToVector(selectedVertex, i1);
+                } if (zAxis) {
+                    successZ = addConstraintToVector(selectedVertex, i2);
+                }
+                success = (successX || successY || successZ);
             }
             // Add to constraint vector
-            bool success = addConstraintToVector(selectedVertex, constraintIndices);
-            if (success) {
+            // Revisualize our constrained vertices if any new ones appeared
+            if ((num_constraints_before == 0) && success) {
                 std::cout << "Added Vertex " << selectedVertex << " to constraint set." << std::endl;
                 // Create point and add to point cloud
                 glm::vec3 v_xyz = psV[selectedVertex];
@@ -704,14 +801,13 @@ void myCallback() {
                 psConstraintPC->setPointRadius(0.008);
 
                 VtoConstraint[selectedVertex] = psConstraints.size()-1;
-            } else {
-                std::cout << "Constraint was not added successfully. Directions may already be constrained." << std::endl;
             }
-        } else {
-            std::cout << "Did not click on handle." << std::endl;
+            // Update the vector visualization
+            if (success) {
+                displayConstraintDirecs();
+            }
         }
     }
-
 
     // Simulation Time
     ImGui::SliderInt("Simulation Time (s)", &seconds, 1, 120);
@@ -810,6 +906,18 @@ int main(int argc, char **argv) {
     m = std::make_unique<Geom::tetmesh>(V, T);
     // Initialize constraints
     constraints.resize(m->n);
+
+    // Tetrahedralize OBJ inputs
+    // TODO
+    /*
+    if (false) {
+        Eigen::MatrixXd V;
+        Eigen::MatrixXi F;
+        Eigen::MatrixXi TF;
+        // Read file using libigl
+        // igl::copyleft::tetgen::tetrahedralize(psV, psF,"pq1.414Y", TV,TT,TF);
+    }
+    */
 
     std::cout << "\nConverting to Polyscope TetMesh" << std::endl;
     IO::polyscopeTetConverter(V, T, psV, psT);
